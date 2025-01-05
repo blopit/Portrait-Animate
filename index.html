@@ -3,72 +3,285 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mouse Following Avatar</title>
-    <!-- Load PIXI.js from CDN with defer -->
-    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <title>Face Warping with SVG</title>
     <style>
         body {
             margin: 0;
-            padding: 0;
+            padding: 20px;
             display: flex;
-            justify-content: center;
+            flex-direction: column;
             align-items: center;
-            min-height: 100vh;
             background: #f0f0f0;
-            cursor: none;
+            font-family: Arial, sans-serif;
         }
-        
-        #upload-container {
-            position: fixed;
-            top: 20px;
-            left: 20px;
-            z-index: 100;
+
+        #container {
+            position: relative;
+            width: 400px;
+            height: 400px;
+            margin: 20px;
         }
-        
+
+        #svg-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
         #upload-btn {
             padding: 10px 20px;
+            font-size: 16px;
             background: #4CAF50;
             color: white;
             border: none;
             border-radius: 5px;
             cursor: pointer;
-            font-size: 16px;
+            margin-bottom: 20px;
         }
-        
+
         #upload-btn:hover {
             background: #45a049;
         }
 
-        #cursor {
-            position: fixed;
-            width: 20px;
-            height: 20px;
-            background: #ff6b6b;
-            border-radius: 50%;
-            pointer-events: none;
-            transform: translate(-50%, -50%);
-            z-index: 1000;
+        #file-input {
+            display: none;
         }
 
-        #app {
-            position: relative;
-            width: 400px;
-            height: 400px;
-            background: #fff;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 18px;
+            color: #666;
         }
     </style>
 </head>
 <body>
-    <div id="cursor"></div>
-    <div id="upload-container">
-        <input type="file" id="file-input" accept="image/*" style="display: none;">
-        <button id="upload-btn">Upload Avatar</button>
+    <button id="upload-btn">Upload Image</button>
+    <input type="file" id="file-input" accept="image/*">
+    <div id="container">
+        <div id="svg-container"></div>
     </div>
-    <div id="app"></div>
-    <!-- Load app.js after PIXI.js -->
-    <script defer src="app.js"></script>
+
+    <script>
+        // Function to load environment variables from .env file
+        async function loadEnvVars() {
+            try {
+                const response = await fetch('http://localhost:8000/.env');
+                const vars = await response.json();
+                return vars;
+            } catch (error) {
+                console.error('Error loading .env file:', error);
+                return {};
+            }
+        }
+
+        let currentImage = null;
+        let landmarks = null;
+        let svgElement = null;
+        let API_KEY = '';
+        let API_SECRET = '';
+        const API_URL = 'https://api-us.faceplusplus.com/facepp/v3/detect';
+
+        // Initialize app with environment variables
+        async function initApp() {
+            const env = await loadEnvVars();
+            API_KEY = env.FACE_API_KEY || '';
+            API_SECRET = env.FACE_API_SECRET || '';
+            
+            if (!API_KEY || !API_SECRET) {
+                console.error('Missing Face++ API credentials in .env file');
+                document.getElementById('svg-container').innerHTML = 
+                    '<div class="loading">Error: Missing API credentials</div>';
+                return;
+            }
+            
+            // Setup event listeners
+            document.getElementById('upload-btn').addEventListener('click', () => {
+                document.getElementById('file-input').click();
+            });
+
+            document.getElementById('file-input').addEventListener('change', handleImageUpload);
+            document.addEventListener('mousemove', handleMouseMove);
+        }
+
+        async function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            // Show loading state
+            const container = document.getElementById('svg-container');
+            container.innerHTML = '<div class="loading">Loading...</div>';
+
+            try {
+                // Create FormData for API request
+                const formData = new FormData();
+                formData.append('api_key', API_KEY);
+                formData.append('api_secret', API_SECRET);
+                formData.append('image_file', file);
+                formData.append('return_landmark', '1');
+
+                // Make API request
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.faces && result.faces.length > 0) {
+                    landmarks = result.faces[0].landmark;
+                    createSVG(file, landmarks);
+                } else {
+                    throw new Error('No face detected');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                container.innerHTML = `<div class="loading">Error: ${error.message}</div>`;
+            }
+        }
+
+        function createSVG(file, landmarks) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const container = document.getElementById('svg-container');
+                const imageUrl = e.target.result;
+
+                // Create SVG element
+                const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                svg.setAttribute('width', '100%');
+                svg.setAttribute('height', '100%');
+                svg.setAttribute('viewBox', '0 0 400 400');
+                svg.style.overflow = 'visible';
+
+                // Define filters
+                const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+                
+                // Create displacement map filter
+                const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
+                filter.setAttribute('id', 'warpFilter');
+                filter.innerHTML = `
+                    <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="blur"/>
+                    <feDisplacementMap in="SourceGraphic" in2="blur" scale="20" xChannelSelector="R" yChannelSelector="G"/>
+                `;
+                defs.appendChild(filter);
+
+                // Create mesh pattern
+                const pattern = document.createElementNS('http://www.w3.org/2000/svg', 'pattern');
+                pattern.setAttribute('id', 'imagePattern');
+                pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+                pattern.setAttribute('width', '400');
+                pattern.setAttribute('height', '400');
+
+                // Add image to pattern
+                const image = document.createElementNS('http://www.w3.org/2000/svg', 'image');
+                image.setAttribute('href', imageUrl);
+                image.setAttribute('width', '400');
+                image.setAttribute('height', '400');
+                image.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+                pattern.appendChild(image);
+                defs.appendChild(pattern);
+
+                svg.appendChild(defs);
+
+                // Create face mesh using landmarks
+                const mesh = createFaceMesh(landmarks);
+                mesh.setAttribute('fill', 'url(#imagePattern)');
+                mesh.setAttribute('filter', 'url(#warpFilter)');
+                svg.appendChild(mesh);
+
+                // Update container
+                container.innerHTML = '';
+                container.appendChild(svg);
+                svgElement = svg;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function createFaceMesh(landmarks) {
+            // Create a path for the face mesh
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            
+            // Convert landmarks to path commands
+            let d = '';
+            
+            // Face contour
+            d += `M ${landmarks.contour_chin.x} ${landmarks.contour_chin.y}`;
+            for (let i = 8; i >= 1; i--) {
+                const point = landmarks[`contour_left${i}`];
+                d += ` L ${point.x} ${point.y}`;
+            }
+            for (let i = 1; i <= 8; i++) {
+                const point = landmarks[`contour_right${i}`];
+                d += ` L ${point.x} ${point.y}`;
+            }
+            d += ' Z';
+
+            // Eyes
+            const leftEyePoints = [
+                'left_eye_left_corner',
+                'left_eye_top',
+                'left_eye_right_corner',
+                'left_eye_bottom'
+            ];
+            const rightEyePoints = [
+                'right_eye_left_corner',
+                'right_eye_top',
+                'right_eye_right_corner',
+                'right_eye_bottom'
+            ];
+
+            // Add left eye
+            d += ` M ${landmarks[leftEyePoints[0]].x} ${landmarks[leftEyePoints[0]].y}`;
+            leftEyePoints.forEach(point => {
+                d += ` L ${landmarks[point].x} ${landmarks[point].y}`;
+            });
+            d += ' Z';
+
+            // Add right eye
+            d += ` M ${landmarks[rightEyePoints[0]].x} ${landmarks[rightEyePoints[0]].y}`;
+            rightEyePoints.forEach(point => {
+                d += ` L ${landmarks[point].x} ${landmarks[point].y}`;
+            });
+            d += ' Z';
+
+            path.setAttribute('d', d);
+            return path;
+        }
+
+        function handleMouseMove(event) {
+            if (!svgElement || !landmarks) return;
+
+            const rect = svgElement.getBoundingClientRect();
+            const x = (event.clientX - rect.left) / rect.width * 400;
+            const y = (event.clientY - rect.top) / rect.height * 400;
+
+            // Calculate center of face
+            const centerX = landmarks.nose_tip.x;
+            const centerY = landmarks.nose_tip.y;
+
+            // Calculate angle and distance
+            const dx = x - centerX;
+            const dy = y - centerY;
+            const angle = Math.atan2(dy, dx);
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            // Update displacement map filter
+            const filter = svgElement.querySelector('#warpFilter feDisplacementMap');
+            const scale = Math.min(distance / 10, 30);
+            filter.setAttribute('scale', scale.toString());
+            
+            // Update transform origin
+            const mesh = svgElement.querySelector('path');
+            mesh.style.transformOrigin = `${centerX}px ${centerY}px`;
+            mesh.style.transform = `rotate(${angle * 10}deg)`;
+        }
+
+        // Initialize the app
+        initApp();
+    </script>
 </body>
 </html> 
