@@ -443,13 +443,17 @@ class FaceLandmarkApp:
         data = {
             'api_key': self.api_key,
             'api_secret': self.api_secret,
-            'return_landmark': '1'
+            'return_landmark': '1',
+            'return_attributes': 'headpose'
         }
 
         try:
             # Make API request
             response = requests.post(self.api_url, files=files, data=data)
             result = response.json()
+            
+            print(f"Response status code: {response.status_code}")
+            print(f"Response content: {response.text}")
             
             if 'error_message' in result:
                 tk.messagebox.showerror("API Error", f"Face++ API Error: {result['error_message']}")
